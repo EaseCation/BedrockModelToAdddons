@@ -94,17 +94,23 @@ blockDemo = {
             "minecraft:block": {
                 "components": {
                     "minecraft:block_light_absorption": {"value": 0},
-                    "minecraft:block_light_emission": {"emission": 1.0},
+                    "minecraft:block_light_emission": {"emission": 0},
                     "minecraft:destroy_time": {"value": 5.0},
                     "netease:aabb": {
                         "clip": {"max": [1.0, 1.0, 1.0], "min": [0.0, 0.0, 0.0]},
                         "collision": {"max": [1.0, 1.0, 1.0], "min": [0.0, 0.0, 0.0]}
                     },
+                    "netease:no_crop_face_block": {},
+                    "netease:listen_block_remove": True,
+                    # "netease:block_random_offset": {
+                    #     "x_scope": [0.0, 1.0],
+                    #     "z_scope": [0.0, 1.0],
+                    # },
                     "netease:block_entity": {"client_tick": False, "movable": False, "tick": False},
                     "netease:face_directional": {"type": "facing_direction"},
                     "netease:listen_block_remove": {"value": True},
                     "netease:render_layer": {"value": "alpha"},
-                    "netease:solid": {"value": True},
+                    "netease:solid": {"value": False},
                     "netease:tier": {"digger": "pickaxe"}
                 },
                 "description": {

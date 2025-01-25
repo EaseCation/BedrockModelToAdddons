@@ -2,610 +2,655 @@
 import json
 import shutil
 import os
-import re
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from googletrans import Translator
-import Util.PackageBuilder as PackageBuilder
-import Presets.behaviorPresets as behaviorPresets
 import copy
+import tkinter as tk
+from tkinter import ttk, filedialog, scrolledtext
+from Util.PackageBuilder import buildDirectories
+from Presets.behaviorPresets import entityDemo, blockDemo
+from threading import Thread
 
 
-def subNameByPath(path, txtList):
-    """
-    批量删除文件名中包含的子串
+class ResourceBuilderGUI:
+    def __init__(self, master):
+        self.master = master
+        self.builder = None
+        self.config = {}
+        self.setup_ui()
 
-    参数:
-        path (str): 目标文件夹路径
-        txtList (list): 需要删除的子串列表
-    """
-    # 遍历指定目录下的所有文件
-    for filename in os.listdir(path):
-        file_path = os.path.join(path, filename)
+    def setup_ui(self):
+        """初始化用户界面"""
+        self.master.title("资源包生成工具 v1.0")
+        self.master.geometry("800x600")
 
-        if os.path.isdir(file_path):
-            continue
+        # 配置面板
+        config_frame = ttk.LabelFrame(self.master, text="配置参数")
+        config_frame.pack(pady=10, padx=10, fill=tk.X)
 
-        # 对每个 txtList 中的子串进行替换
-        new_filename = filename
-        for txt in txtList:
-            if txt in new_filename:
-                new_filename = new_filename.replace(txt, '')
+        # 路径选择
+        self.create_path_selector(config_frame, "贴图路径:", "input_texture")
+        self.create_path_selector(config_frame, "模型路径:", "input_geo")
+        self.create_path_selector(config_frame, "构建路径:", "build_path")
 
-        # 如果文件名发生了变化，执行重命名操作
-        if new_filename != filename:
-            new_file_path = os.path.join(path, new_filename)
-            if not os.path.exists(new_file_path):
-                os.rename(file_path, new_file_path)
+        # 配置参数输入
+        params = [
+            ("名称前缀(自行决定):", "prefix", "drinks_"),
+            ("实体后缀(建议默认):", "suffix_entity", "_entity"),
+            ("方块后缀(建议默认):", "suffix_block", "_block"),
+            ("命名空间(自行决定):", "name", "ecx"),
+            ("子目录名(自行决定):", "directory", "drinkBlock")
+        ]
+        for label, key, default in params:
+            self.create_config_input(config_frame, label, key, default)
 
+        # 操作按钮
+        btn_frame = ttk.Frame(self.master)
+        btn_frame.pack(pady=5)
+        ttk.Button(btn_frame, text="开始生成", command=self.start_build).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="清空日志", command=self.clear_log).pack(side=tk.LEFT, padx=5)
 
-# 批量修改文件名
-def renameAddByPath(path, prefix, suffix, directoryType):
+        # 日志输出
+        self.log_area = scrolledtext.ScrolledText(self.master, wrap=tk.WORD)
+        self.log_area.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
 
-    try:
-        # 获取目录中的所有文件和子目录
-        entries = os.listdir(path)
+    def create_path_selector(self, parent, label, key):
+        """创建路径选择组件"""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=2)
 
-        # 遍历目录中的每一项
-        for entry in entries:
-            full_path = os.path.join(path, entry)
+        ttk.Label(frame, text=label, width=10).pack(side=tk.LEFT)
+        entry = ttk.Entry(frame, width=50)
+        entry.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        ttk.Button(frame, text="浏览...", command=lambda: self.select_path(entry)).pack(side=tk.LEFT)
 
-            # 仅处理文件，忽略目录
-            if os.path.isfile(full_path):
-                # 分离文件名和扩展名
-                file_name, file_extension = os.path.splitext(entry)
-                # 构建新的文件名
-                file_name = file_name.replace(".geo", "")
-                if directoryType == "geo":
-                    new_filename = f"{prefix}{file_name}{suffix}.geo{file_extension}"
-                else:
-                    new_filename = f"{prefix}{file_name}{suffix}{file_extension}"
-                new_path = os.path.join(path, new_filename)
+        setattr(self, f"{key}_entry", entry)
 
-                # 重命名文件
-                os.rename(full_path, new_path)
-                print(f"规范化命名: {entry} -> {new_filename}")
+    def create_config_input(self, parent, label, key, default):
+        """创建配置参数输入组件"""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=2)
 
-    except Exception as e:
-        print(f"发生错误: {e}")
+        ttk.Label(frame, text=label, width=15).pack(side=tk.LEFT)
+        entry = ttk.Entry(frame)
+        entry.insert(0, default)
+        entry.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
-# 批量翻译文件名
-def nameTranslateByDirectory(path):
-    # 初始化翻译器
-    translator = Translator()
+        setattr(self, f"{key}_entry", entry)
 
-    # 遍历目录中的文件
-    for filename in os.listdir(path):
-        # 跳过非文件
-        if not os.path.isfile(os.path.join(path, filename)):
-            continue
+    def select_path(self, entry):
+        """处理路径选择"""
+        path = filedialog.askdirectory()
+        if path:
+            entry.delete(0, tk.END)
+            entry.insert(0, path)
 
-        # 分离文件名和扩展名
-        file_name, file_extension = os.path.splitext(filename)
+    def log(self, message):
+        """日志输出"""
+        self.log_area.insert(tk.END, message + "\n")
+        self.log_area.see(tk.END)
 
+    def clear_log(self):
+        """清空日志"""
+        self.log_area.delete(1.0, tk.END)
+
+    def get_config(self):
+        """获取配置参数"""
+        return {
+            "subTxtList": ["_entity", "drink_", "drinks_", "_block"],
+            "name": self.name_entry.get(),
+            "prefix": self.prefix_entry.get(),
+            "suffix_entity": self.suffix_entity_entry.get(),
+            "suffix_block": self.suffix_block_entry.get(),
+            "directory": self.directory_entry.get()
+        }
+
+    def start_build(self):
+        """启动构建过程"""
+        self.config = self.get_config()
+        input_texture = self.input_texture_entry.get()
+        input_geo = self.input_geo_entry.get()
+        build_path = self.build_path_entry.get()
+
+        if not all([input_texture, input_geo, build_path]):
+            self.log("错误：请先设置所有路径！")
+            return
+
+        # 在后台线程中执行构建
+        Thread(target=self.run_build_process, args=(build_path, input_texture, input_geo)).start()
+
+    def run_build_process(self, build_path, input_texture, input_geo):
+        """执行构建流程"""
         try:
-            # 翻译文件名
-            translated_name = translator.translate(file_name, src='auto', dest='zh-cn').text
+            self.builder = ResourceBuilder(self.config)
 
-            # 创建新文件名
-            new_filename = f"{file_name}_{translated_name}{file_extension}"
+            # 0. 创建目录
+            self.log("\n=== 正在创建目录结构 ===")
+            buildDirectories(build_path, self.config['directory'])
 
-            # 重命名文件
-            os.rename(
-                os.path.join(path, filename),
-                os.path.join(path, new_filename)
-            )
-            print(f"Renamed: {filename} -> {new_filename}")
+            # 1-2. 文件名处理
+            self.process_naming(input_texture, "tex")
+            self.process_naming(input_geo, "geo")
+
+            # 3. 修改geo标识符
+            self.log("\n=== 正在更新模型标识 ===")
+            self.builder.modify_geo_identifier(input_geo)
+
+            # 4-6. 生成行为包和资源包
+            self.generate_packages(build_path, input_texture)
+
+            # 7-9. 更新JSON文件
+            self.update_json_files(build_path, input_texture)
+
+            # 10. 复制文件
+            self.copy_resources(build_path, input_texture, input_geo)
+
+            # 11. 调整包围盒
+            self.adjust_bounding_boxes(build_path)
+
+            self.log("\n=== 全部操作已完成！ ===")
         except Exception as e:
-            print(f"Error renaming file {filename}: {e}")
+            self.log(f"\n发生严重错误: {str(e)}")
 
-# 批量修改geo中的identifier
-def modifyGeoIdentifier(path):
-    """
-    遍历目录，打开所有 .json 文件，并修改其中的 identifier 值。
+    def process_naming(self, path, file_type):
+        """处理命名操作"""
+        self.log(f"\n=== 正在处理 {os.path.basename(path)} 的命名 ===")
+        self.builder.sub_name_by_path(path, self.config['subTxtList'])
+        self.builder.rename_add_by_path(
+            path,
+            self.config['prefix'],
+            self.config['suffix_entity'],
+            file_type
+        )
 
-    参数:
-        directory (str): 目标目录路径
-    """
+    def generate_packages(self, build_path, input_texture):
+        """生成各类资源包"""
+        self.log("\n=== 正在生成行为包和资源包 ===")
+        paths = {
+            "behavior_entity": os.path.join(build_path, self.builder.BEHAVIOR_PACK, "entities",
+                                            self.config["directory"]),
+            "behavior_block": os.path.join(build_path, self.builder.BEHAVIOR_PACK, "netease_blocks"),
+            "resource_entity": os.path.join(build_path, self.builder.RESOURCE_PACK, self.builder.ENTITY,
+                                            self.config["directory"])
+        }
 
-    def update_identifier(data, filename_base):
-        """
-        递归地更新数据中 key 为 'identifier' 的值。
-        如果值是字符串，更新为 'geometry.' + 文件名去掉 '.geo' 和扩展名的部分。
-        如果值是字典，则深入查找并递归修改。
+        self.builder.build_behavior_entity_by_directory(input_texture, paths["behavior_entity"])
+        self.builder.build_behavior_block_by_directory(input_texture, paths["behavior_block"])
+        self.builder.build_resource_block_by_directory(input_texture, paths["resource_entity"],
+                                                       self.config["directory"])
 
-        参数:
-            data (dict or list): JSON 数据
-            filename_base (str): 用于拼接 'geometry.' 前缀的基础文件名
+    def update_json_files(self, build_path, input_texture):
+        """更新JSON配置文件"""
+        self.log("\n=== 正在更新配置文件 ===")
+        json_paths = {
+            "blocks_json": os.path.join(build_path, self.builder.RESOURCE_PACK),
+            "item_texture": os.path.join(build_path, self.builder.RESOURCE_PACK, self.builder.TEXTURES),
+            "terrain_texture": os.path.join(build_path, self.builder.RESOURCE_PACK, self.builder.TEXTURES)
+        }
 
-        返回:
-            更新后的数据
-        """
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if key == "identifier":
-                    if isinstance(value, str):
-                        data[key] = f"geometry.{filename_base}"
-                else:
-                    update_identifier(value, filename_base)
-        elif isinstance(data, list):
-            for item in data:
-                update_identifier(item, filename_base)
-        return data
-    try:
-        # 遍历目录下的所有文件
-        for filename in os.listdir(path):
-            if filename.endswith(".json"):
-                full_path = os.path.join(path, filename)
+        # 更新blocks.json
+        self.builder.build_json_blocks(
+            os.path.join(json_paths["blocks_json"],"blocks.json"),
+            input_texture,
+            lambda filename_base: {
+                    "client_entity": {
+                        "hand_model_use_client_entity": True,
+                        "identifier": f"{self.config['name']}:{filename_base}",
+                        "block_icon": f"{self.config['name']}:{filename_base}".replace(
+                            self.config["suffix_entity"], self.config["suffix_block"])
+                    },
+                    "sound": "metal"
+                },
+            json_key=self.config["name"]
+        )
 
-                # 提取基础文件名，去掉 .geo 和扩展名部分
-                filename_base = os.path.splitext(filename)[0].replace(".geo", "")
+        # 更新 item_texture.json
+        self.builder.build_json_item_texture(
+            os.path.join(json_paths["item_texture"],"item_texture.json"),
+            input_texture,
+            lambda filename_base: {
+                "textures": f"textures/items/egg/{filename_base}"
+                }
 
-                # 打开 JSON 文件并读取内容
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+        )
 
-                # 更新 identifier 值
-                updated_data = update_identifier(data, filename_base)
+        # 更新 terrain_texture.json
+        self.builder.build_json_terrain_texture(
+            os.path.join(json_paths["terrain_texture"],"terrain_texture.json"),
+            input_texture,
+            lambda filename_base: {
+                    "textures": f"textures/items/egg/{filename_base}"
+                },
+            json_key=self.config["name"]
+        )
 
-                # 将修改后的数据写回文件
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    json.dump(updated_data, f, indent=4, ensure_ascii=False)
+    def copy_resources(self, build_path, input_texture, input_geo):
+        """复制资源文件"""
+        self.log("\n=== 正在复制资源文件 ===")
+        self.builder.copy_files(
+            input_texture,
+            os.path.join(build_path, self.builder.RESOURCE_PACK, self.builder.TEXTURES,
+                         self.builder.ENTITY, self.config["directory"])
+        )
+        self.builder.copy_files(
+            input_geo,
+            os.path.join(build_path, self.builder.RESOURCE_PACK, self.builder.MODELS,
+                         self.builder.ENTITY, self.config["directory"])
+        )
 
-                print(f"已修正Geometry名称: {filename}")
-
-    except Exception as e:
-        print(f"发生错误: {e}")
-
-# 批量生成生物行为包
-def buildBehaviorEntityByDirectory(input_directory, output_directory):
-    """
-    批量读取指定目录下的 JSON 文件，通过调用行为生成方法，
-    并将生成的行为数据字典保存到指定的输出目录。
-
-    参数:
-        input_directory (str): 输入目录路径，包含需要处理的 JSON 文件。
-        output_directory (str): 输出目录路径，用于保存生成的 JSON 文件。
-    """
-    def buildDemo(filename_base):
-        """
-        根据文件名基础部分生成生物行为的字典数据。
-        模拟了生成行为组件的过程，实际应用中此部分可以根据具体需求更改。
-
-        参数:
-            filename_base (str): 文件名（去掉扩展名部分）
-
-        返回:
-            dict: 包含生物行为和组件的字典数据
-        """
-        # 示例生成的字典内容，模拟生成某种实体的行为数据
-        behavior_data = copy.deepcopy(behaviorPresets.entityDemo)
-        behavior_data["minecraft:entity"]["description"]["identifier"] = "{}:{}".format(config["name"], filename_base)
-        return behavior_data
-    try:
-        # 遍历输入目录中的所有文件
-        for filename in os.listdir(input_directory):
-
-            # 获取文件名基础部分（去掉扩展名）
-            filename_base = os.path.splitext(filename)[0]
-
-            # 生成行为数据字典
-            result_dict = buildDemo(filename_base)
-
-            # 构建输出文件路径
-            output_file_path = os.path.join(output_directory, f"{filename_base}.json")
-
-            # 将字典数据保存为 JSON 文件
-            with open(output_file_path, 'w', encoding='utf-8') as f:
-                json.dump(result_dict, f, indent=4, ensure_ascii=False)
-
-            print(f"已生成行为数据{filename_base}.json并保存到: {output_file_path}")
-    except Exception as e:
-        print(f"发生错误: {e}")
-
-# 批量生成方块行为包
-
-def buildBehaviorBlockByDirectory(input_directory, output_directory):
-    """
-    批量生成方块行为包。
-
-    遍历输入目录中的 JSON 文件，调用 generateBlockBehavior 方法生成行为字典，
-    并将生成的字典保存到指定的输出目录。
-
-    参数:
-        input_directory (str): 输入目录路径，包含待处理的 JSON 文件。
-        output_directory (str): 输出目录路径，用于保存生成的行为包 JSON 文件。
-        config (dict): 配置信息，用于调整行为包命名规则等。
-    """
-
-    def generateBlockBehavior(filename_base):
-        """
-        根据文件名基础部分生成方块的行为字典。
-
-        参数:
-            filename_base (str): 文件名基础部分（不含扩展名）。
-
-        返回:
-            dict: 方块行为的字典。
-        """
-        # 生成方块行为的字典内容
-        behavior = copy.deepcopy(behaviorPresets.blockDemo)
-        behavior["minecraft:block"]["description"]["identifier"] = "{}:{}".format(config["name"], filename_base)
-        return behavior
-
-    # 确保输出目录存在
-    os.makedirs(output_directory, exist_ok=True)
-
-    try:
-        # 遍历输入目录中的所有文件
-        for filename in os.listdir(input_directory):
-            # 获取去除扩展名后的文件基础部分
-            filename_base = os.path.splitext(filename)[0]
-
-            # 替换后缀，以便为方块生成合适的名称
-            filename_base = filename_base.replace(config["suffix_entity"], config["suffix_block"])
-
-            # 生成行为字典
-            behavior_dict = generateBlockBehavior(filename_base)
-
-            # 构建输出文件路径
-            output_file_path = os.path.join(output_directory, f"{filename_base}.json")
-
-            # 将字典保存为 JSON 文件
-            with open(output_file_path, 'w', encoding='utf-8') as output_file:
-                json.dump(behavior_dict, output_file, indent=4, ensure_ascii=False)
-
-            # 输出生成的信息
-            print(f"已生成netease_blocks输出到: {output_file_path}")
-
-    except Exception as e:
-        print(f"发生错误: {e}")
+    def adjust_bounding_boxes(self, build_path):
+        """调整包围盒"""
+        self.log("\n=== 正在调整包围盒 ===")
+        geo_model_path = os.path.join(
+            build_path, self.builder.RESOURCE_PACK, self.builder.MODELS,
+            self.builder.ENTITY, self.config['directory']
+        )
+        netease_block_path = os.path.join(build_path, self.builder.BEHAVIOR_PACK, "netease_blocks")
+        self.builder.change_netease_block(geo_model_path, netease_block_path)
 
 
-# 批量生成生物资源包
-def buildResourceBlockByDirectory(input_directory, output_directory, path):
-    """
-    读取指定目录下的 JSON 文件名，调用 ABC 方法生成字典，
-    并将生成的字典保存到指定的输出目录。
+class ResourceBuilder:
+        def __init__(self, config):
+            self.config = config
+            self.BEHAVIOR_PACK = "behavior_pack"
+            self.RESOURCE_PACK = "resource_pack"
+            self.TEXTURES = "textures"
+            self.MODELS = "models"
+            self.ENTITY = "entity"
 
-    参数:
-        input_directory (str): 输入目录路径，包含 JSON 文件。
-        output_directory (str): 输出目录路径，用于保存结果文件。
-    """
+        def sub_name_by_path(self, path, txt_list):
+            """
+            批量删除文件名中包含的子串
 
-    def buildBehavior(filename_base):
-        # 示例生成的字典内容
-        demo = {
-                "format_version": "1.10.0",
-                "minecraft:client_entity": {
-                    "description": {
-                        "geometry": {
-                            "default": "geometry.{}".format(filename_base)
-                        },
-                        "identifier": "{}:{}".format(config["name"], filename_base),
-                        "materials": {
-                            "default": "entity_alphatest"
-                        },
-                        "render_controllers": [
-                            "controller.render.default"
-                        ],
-                        "spawn_egg": {
-                            "texture": "{}.egg".format(filename_base),
-                            "texture_index": 0
-                        },
-                        "textures": {
-                            "default": "textures/entity/{}/{}".format(path, filename_base)
+            参数:
+                path (str): 目标文件夹路径
+                txt_list (list): 需要删除的子串列表
+            """
+            for filename in os.listdir(path):
+                file_path = os.path.join(path, filename)
+                if os.path.isdir(file_path):
+                    continue
+
+                new_filename = filename
+                for txt in txt_list:
+                    if txt in new_filename:
+                        new_filename = new_filename.replace(txt, '')
+
+                if new_filename != filename:
+                    new_file_path = os.path.join(path, new_filename)
+                    if not os.path.exists(new_file_path):
+                        os.rename(file_path, new_file_path)
+
+        def rename_add_by_path(self, path, prefix, suffix, directory_type):
+            """
+            批量修改文件名
+
+            参数:
+                path (str): 目标文件夹路径
+                prefix (str): 文件名前缀
+                suffix (str): 文件名后缀
+                directory_type (str): 目录类型（geo 或 tex）
+            """
+            try:
+                for entry in os.listdir(path):
+                    full_path = os.path.join(path, entry)
+                    if os.path.isfile(full_path):
+                        file_name, file_extension = os.path.splitext(entry)
+                        file_name = file_name.replace(".geo", "")
+                        new_filename = f"{prefix}{file_name}{suffix}.geo{file_extension}" if directory_type == "geo" else f"{prefix}{file_name}{suffix}{file_extension}"
+                        new_path = os.path.join(path, new_filename)
+                        os.rename(full_path, new_path)
+                        print(f"规范化命名: {entry} -> {new_filename}")
+            except Exception as e:
+                print(f"发生错误: {e}")
+
+        def modify_geo_identifier(self, path):
+            """
+            批量修改geo中的identifier
+
+            参数:
+                path (str): 目标文件夹路径
+            """
+
+            def update_identifier(data, filename_base):
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if key == "identifier" and isinstance(value, str):
+                            data[key] = f"geometry.{filename_base}"
+                        else:
+                            update_identifier(value, filename_base)
+                elif isinstance(data, list):
+                    for item in data:
+                        update_identifier(item, filename_base)
+                return data
+
+            try:
+                for filename in os.listdir(path):
+                    if filename.endswith(".json"):
+                        full_path = os.path.join(path, filename)
+                        filename_base = os.path.splitext(filename)[0].replace(".geo", "")
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        updated_data = update_identifier(data, filename_base)
+                        with open(full_path, 'w', encoding='utf-8') as f:
+                            json.dump(updated_data, f, indent=4, ensure_ascii=False)
+                        print(f"已修正Geometry名称: {filename}")
+            except Exception as e:
+                print(f"发生错误: {e}")
+
+        def build_behavior_entity_by_directory(self, input_directory, output_directory):
+            """
+            批量生成生物行为包
+
+            参数:
+                input_directory (str): 输入目录路径
+                output_directory (str): 输出目录路径
+            """
+
+            def build_demo(filename_base):
+                behavior_data = copy.deepcopy(entityDemo)
+                behavior_data["minecraft:entity"]["description"]["identifier"] = "{}:{}".format(self.config["name"],
+                                                                                                filename_base)
+                return behavior_data
+
+            try:
+                for filename in os.listdir(input_directory):
+                    filename_base = os.path.splitext(filename)[0]
+                    result_dict = build_demo(filename_base)
+                    output_file_path = os.path.join(output_directory, f"{filename_base}.json")
+                    with open(output_file_path, 'w', encoding='utf-8') as f:
+                        json.dump(result_dict, f, indent=4, ensure_ascii=False)
+                    print(f"已生成行为数据{filename_base}.json并保存到: {output_file_path}")
+            except Exception as e:
+                print(f"发生错误: {e}")
+
+        def build_behavior_block_by_directory(self, input_directory, output_directory):
+            """
+            批量生成方块行为包
+
+            参数:
+                input_directory (str): 输入目录路径
+                output_directory (str): 输出目录路径
+            """
+
+            def generate_block_behavior(filename_base):
+                behavior = copy.deepcopy(blockDemo)
+                behavior["minecraft:block"]["description"]["identifier"] = "{}:{}".format(self.config["name"],
+                                                                                          filename_base)
+                return behavior
+
+            os.makedirs(output_directory, exist_ok=True)
+            try:
+                for filename in os.listdir(input_directory):
+                    filename_base = os.path.splitext(filename)[0].replace(self.config["suffix_entity"],
+                                                                          self.config["suffix_block"])
+                    behavior_dict = generate_block_behavior(filename_base)
+                    output_file_path = os.path.join(output_directory, f"{filename_base}.json")
+                    with open(output_file_path, 'w', encoding='utf-8') as output_file:
+                        json.dump(behavior_dict, output_file, indent=4, ensure_ascii=False)
+                    print(f"已生成netease_blocks输出到: {output_file_path}")
+            except Exception as e:
+                print(f"发生错误: {e}")
+
+        def build_resource_block_by_directory(self, input_directory, output_directory, path):
+            """
+            批量生成生物资源包
+
+            参数:
+                input_directory (str): 输入目录路径
+                output_directory (str): 输出目录路径
+                path (str): 资源路径
+            """
+
+            def build_behavior(filename_base):
+                return {
+                    "format_version": "1.10.0",
+                    "minecraft:client_entity": {
+                        "description": {
+                            "geometry": {"default": f"geometry.{filename_base}"},
+                            "identifier": f"{self.config['name']}:{filename_base}",
+                            "materials": {"default": "entity_alphatest"},
+                            "render_controllers": ["controller.render.default"],
+                            "spawn_egg": {
+                                "texture": f"{filename_base}.egg",
+                                "texture_index": 0
+                            },
+                            "textures": {
+                                "default": f"textures/entity/{path}/{filename_base}"
+                            }
                         }
                     }
                 }
-            }
-        return demo
-    # 如果输出目录不存在，创建目录
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-    try:
-        # 遍历输入目录中的所有文件
-        for filename in os.listdir(input_directory):
-            # if filename.endswith(".json"):
-            # 去掉扩展名，获取文件名基础部分
-            filename_base = os.path.splitext(filename)[0]
-            # filename_base = filename_base.replace("_entity", "")
-            # 调用 ABC 方法，生成字典
-            result_dict = buildBehavior(filename_base)
-            # 构建输出文件路径
-            output_file_path = os.path.join(output_directory, f"{filename_base}.json")
-            # 将字典保存为 JSON 文件
-            with open(output_file_path, 'w', encoding='utf-8') as f:
-                json.dump(result_dict, f, indent=4, ensure_ascii=False)
 
-            print(f"已根据: {filename} -> 生成资源包Entity输出到: {output_file_path}")
-
-        print("所有文件处理完成！")
-    except Exception as e:
-        print(f"发生错误: {e}")
-
-# 调整blocks.json文件(方块定义)
-def buildBlocksJson(blocksPath, directory):
-    """
-    读取路径1中的 blocks.json 文件，获取路径2中的文件名，调用 ABC 进行处理，
-    并将处理结果保存到 blocks.json 中。
-
-    参数:
-        path1 (str): 路径1目录，包含 blocks.json 文件。
-        path2 (str): 路径2目录，包含待处理的文件。
-    """
-
-    def buildDemo(filename_base):
-        # 示例生成的字典内容
-        return {
-        "client_entity": {
-            "hand_model_use_client_entity": True,
-            "identifier": "{}:{}".format(config["name"], filename_base),
-            "block_icon": "{}:{}".format(config["name"], filename_base).replace(config["suffix_entity"], config["suffix_block"])
-        },
-        "sound": "metal"
-    }
-
-    # 读取路径1中的 blocks.json 文件
-    blocks_json_path = os.path.join(blocksPath, "blocks.json")
-    try:
-        with open(blocks_json_path, 'r', encoding='utf-8') as f:
-            blocks_data = json.load(f)
-        print(f"成功读取 {blocks_json_path}")
-    except Exception as e:
-        print(f"读取 {blocks_json_path} 时发生错误: {e}")
-        return
-
-    # 获取路径2中的所有文件名，去掉扩展名
-    filenames = [os.path.splitext(f)[0] for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-    print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
-
-    # 调用 ABC 方法处理每个文件名，并将结果保存到 blocks_data 中
-    for filename_base in filenames:
-        result_dict = buildDemo(filename_base)
-        blocks_data["{}:{}".format(config["name"], filename_base.replace(config["suffix_entity"], config["suffix_block"]))] = (result_dict)  # 将处理结果追加到 blocks_data
-
-    # 保存处理后的数据回 blocks.json 文件
-    try:
-        with open(blocks_json_path, 'w', encoding='utf-8') as f:
-            json.dump(blocks_data, f, indent=4, ensure_ascii=False)
-        print(f"成功更新blocks.json到 {blocks_json_path}")
-    except Exception as e:
-        print(f"保存到 {blocks_json_path} 时发生错误: {e}")
-
-    except Exception as e:
-        print(f"发生错误: {e}")
-
-# 调整item_texture.json文件(实体怪物蛋)
-def buildItemTextureJson(itemTexturePath, directory):
-
-    def buildDemo(filename_base):
-        # 示例生成的字典内容
-        return {
-            "textures": "textures/items/egg/{}".format(filename_base)
-        }
-
-    # 读取路径1中的 item_texture.json 文件
-    item_texture_json_path = os.path.join(itemTexturePath, "item_texture.json")
-    try:
-        with open(item_texture_json_path, 'r', encoding='utf-8') as f:
-            item_texture_data = json.load(f)
-        print(f"成功读取 {item_texture_json_path}")
-    except Exception as e:
-        print(f"读取 {item_texture_json_path} 时发生错误: {e}")
-        return
-
-    # 获取路径2中的所有文件名，去掉扩展名
-    filenames = [os.path.splitext(f)[0] for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-    print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
-
-    # 调用 ABC 方法处理每个文件名，并将结果保存到 blocks_data 中
-    for filename_base in filenames:
-        result_dict = buildDemo(filename_base)
-        item_texture_data["texture_data"]["{}.egg".format(filename_base)] = (result_dict)  # 将处理结果追加到 texture_data
-
-    # 保存处理后的数据回 item_texture.json 文件
-    try:
-        with open(item_texture_json_path, 'w', encoding='utf-8') as f:
-            json.dump(item_texture_data, f, indent=4, ensure_ascii=False)
-        print(f"成功更新item_texture.json到 {item_texture_json_path}")
-    except Exception as e:
-        print(f"保存到 {item_texture_json_path} 时发生错误: {e}")
-
-    except Exception as e:
-        print(f"发生错误: {e}")
-
-def copyFiles(src_dir, dest_dir):
-    # 遍历源路径中的文件并复制到目标路径
-    for filename in os.listdir(src_dir):
-        src_file = os.path.join(src_dir, filename)
-        dest_file = os.path.join(dest_dir, filename)
-
-        # 确保是文件而非目录
-        if os.path.isfile(src_file):
+            os.makedirs(output_directory, exist_ok=True)
             try:
-                shutil.copy(src_file, dest_file)  # 复制文件
+                for filename in os.listdir(input_directory):
+                    filename_base = os.path.splitext(filename)[0]
+                    result_dict = build_behavior(filename_base)
+                    output_file_path = os.path.join(output_directory, f"{filename_base}.json")
+                    with open(output_file_path, 'w', encoding='utf-8') as f:
+                        json.dump(result_dict, f, indent=4, ensure_ascii=False)
+                    print(f"已根据: {filename} -> 生成资源包Entity输出到: {output_file_path}")
             except Exception as e:
-                print(f"复制文件 {filename} 时发生错误: {e}")
+                print(f"发生错误: {e}")
 
-# 调整terrain_texture.json文件(方块图集)
-def buildTerrainTextureJson(terrainTexturePath, directory):
+        def build_json_blocks(self, json_path, directory, build_demo, json_key=None):
+            """
+            通用blocks.json文件生成函数
 
-    def buildDemo(filename_base):
-        # 示例生成的字典内容
-        return {
-            "textures": "textures/items/egg/{}".format(filename_base)
-        }
+            参数:
+                json_path (str): JSON文件路径
+                directory (str): 目标目录路径
+                build_demo (function): 生成字典的函数
+                json_key (str): JSON文件中需要更新的键
+            """
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                print(f"成功读取 {json_path}")
+            except Exception as e:
+                print(f"读取 {json_path} 时发生错误: {e}")
+                return
 
-    # 读取路径1中的 terrain_texture.json 文件
-    terrain_texture_json_path = os.path.join(terrainTexturePath, "terrain_texture.json")
-    try:
-        with open(terrain_texture_json_path, 'r', encoding='utf-8') as f:
-            terrain_texture_data = json.load(f)
-        print(f"成功读取 {terrain_texture_json_path}")
-    except Exception as e:
-        print(f"读取 {terrain_texture_json_path} 时发生错误: {e}")
-        return
+            filenames = [os.path.splitext(f)[0] for f in os.listdir(directory)
+                         if os.path.isfile(os.path.join(directory, f))]
+            print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
 
-    # 获取路径2中的所有文件名，去掉扩展名
-    filenames = [os.path.splitext(f)[0] for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-    print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
+            for filename_base in filenames:
+                # 生成原始数据字典
+                result_dict = build_demo(filename_base)
 
-    # 调用 ABC 方法处理每个文件名，并将结果保存到 blocks_data 中
-    for filename_base in filenames:
-        result_dict = buildDemo(filename_base)
-        terrain_texture_data["texture_data"]["{}:{}".format(config["name"], filename_base).replace(config["suffix_entity"], config["suffix_block"])] = (result_dict)  # 将处理结果追加到 texture_data
+                # 构造新的完整键名（带命名空间和后缀替换）
+                if json_key:
+                    formatted_key = f"{json_key}:{filename_base.replace(self.config['suffix_entity'], self.config['suffix_block'])}"
+                else:
+                    formatted_key = f"{filename_base.replace(self.config['suffix_entity'], self.config['suffix_block'])}"
+                # 直接写入顶层字典
+                json_data[formatted_key] = result_dict
 
-    # 保存处理后的数据回 item_texture.json 文件
-    try:
-        with open(terrain_texture_json_path, 'w', encoding='utf-8') as f:
-            json.dump(terrain_texture_data, f, indent=4, ensure_ascii=False)
-        print(f"成功更新terrain_texture.json到 {terrain_texture_json_path}")
-    except Exception as e:
-        print(f"保存到 {terrain_texture_json_patZh} 时发生错误: {e}")
+            try:
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=4, ensure_ascii=False)
+                print(f"成功更新JSON文件到 {json_path}")
+            except Exception as e:
+                print(f"保存到 {json_path} 时发生错误: {e}")
 
-    except Exception as e:
-        print(f"发生错误: {e}")
+        def build_json_item_texture(self, json_path, directory, build_demo, json_key=None):
+            """
+            通用item_texture.json文件生成函数
 
-# 计算整个模型的包围盒
-def calculate_bounding_box(model_data):
-    min_bound = [float('inf')] * 3  # 初始化为正无穷
-    max_bound = [float('-inf')] * 3  # 初始化为负无穷
+            参数:
+                json_path (str): JSON文件路径
+                directory (str): 目标目录路径
+                build_demo (function): 生成字典的函数
+                json_key (str): JSON文件中需要更新的键
+            """
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                print(f"成功读取 {json_path}")
+            except Exception as e:
+                print(f"读取 {json_path} 时发生错误: {e}")
+                return
 
-    # 遍历所有 bone 和 cube
-    for geometry in model_data['minecraft:geometry']:
-        for bone in geometry['bones']:
-            for cube in bone['cubes']:
-                origin = cube['origin']
-                origin[0]  # 块复位
-                origin[2]  # 块复位
-                size = cube['size']
+            filenames = [os.path.splitext(f)[0] for f in os.listdir(directory)
+                         if os.path.isfile(os.path.join(directory, f))]
+            print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
 
-                # 计算单个 cube 的最小和最大坐标
-                def calculate_cube_bounds(origin, size):
-                    # origin 是 [x, y, z], size 是 [width, height, depth]
-                    min_point = [origin[i] for i in range(3)]
-                    max_point = [origin[i] + size[i] for i in range(3)]
-                    return min_point, max_point
-                cube_min, cube_max = calculate_cube_bounds(origin, size)
+            # 确保 "texture_data" 键存在
+            if "texture_data" not in json_data:
+                json_data["texture_data"] = {}
 
-                # 更新全局最小坐标和最大坐标
-                for i in range(3):
-                    min_bound[i] = min(min_bound[i], cube_min[i])
-                    max_bound[i] = max(max_bound[i], cube_max[i])
+            for filename_base in filenames:
+                # 生成原始数据字典
+                result_dict = build_demo(filename_base)
 
-    minBox = [-max_bound[0] * 0.0625, min_bound[1] * 0.0625, min_bound[2] * 0.0625]
-    maxBox = [-min_bound[0] * 0.0625, max_bound[1] * 0.0625, max_bound[2] * 0.0625]
-    for i in range(0, 3):
-        if minBox[i] < -1:
-            minBox[i] = -1.0
-        if minBox[i] > 2:
-            minBox[i] = 2.0
-        if maxBox[i] < -1:
-            maxBox[i] = -1.0
-        if maxBox[i] > 2:
-            maxBox[i] = 2.0
-    return minBox, maxBox
+                # 构造新的完整键名（带命名空间和后缀替换）
+                if json_key:
+                    formatted_key = f"{json_key}:{filename_base}.egg"
+                else:
+                    formatted_key = f"{filename_base}.egg"
 
-# 批量修改包围盒
-def changeNeteaseBlock(src_dir, dest_dir):
-    # 遍历路径1中的所有文件
-    for filename in os.listdir(src_dir):
-        # 检查文件是否为 JSON 文件
-        if filename.endswith('.json'):
-            # 获取文件名的非拓展部分
-            base_filename = os.path.splitext(filename)[0].replace(config["suffix_entity"] + ".geo", config["suffix_block"])
-            # 获取文件的完整路径
-            file_path = os.path.join(src_dir, filename)
+                # 将生成的字典内容写入到 "texture_data" 中
+                json_data["texture_data"][formatted_key] = result_dict
 
-            def load_json(file_path):
-                with open(file_path, 'r') as file:
-                    return json.load(file)
+            try:
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=4, ensure_ascii=False)
+                print(f"成功更新JSON文件到 {json_path}")
+            except Exception as e:
+                print(f"保存到 {json_path} 时发生错误: {e}")
 
-            model_data = load_json(file_path)
-            # 计算包围盒
-            min_bound, max_bound = calculate_bounding_box(model_data)
+        def build_json_terrain_texture(self, json_path, directory, build_demo, json_key=None):
+            """
+            通用terrain_texture.json文件生成函数
 
-            # 在路径2中寻找同名的 JSON 文件
-            target_file_path = os.path.join(dest_dir, f"{base_filename}.json")
+            参数:
+                json_path (str): JSON文件路径
+                directory (str): 目标目录路径
+                build_demo (function): 生成字典的函数
+                json_key (str): JSON文件中需要更新的键
+            """
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                print(f"成功读取 {json_path}")
+            except Exception as e:
+                print(f"读取 {json_path} 时发生错误: {e}")
+                return
 
-            # 如果目标文件存在
-            if os.path.exists(target_file_path):
-                # 读取路径2中的 JSON 文件
-                with open(target_file_path, 'r') as file:
-                    target_data = json.load(file)
+            filenames = [os.path.splitext(f)[0] for f in os.listdir(directory)
+                         if os.path.isfile(os.path.join(directory, f))]
+            print(f"从目标路径中获取到 {len(filenames)} 个文件：{filenames}")
 
-                # 修改 target_data 中 'ggg' 键的值为 111
-                if 'minecraft:block' in target_data:
-                    target_data["minecraft:block"]["components"]["netease:aabb"]["clip"]["max"] = max_bound
-                    target_data["minecraft:block"]["components"]["netease:aabb"]["collision"]["max"] = max_bound
-                    target_data["minecraft:block"]["components"]["netease:aabb"]["clip"]["min"] = min_bound
-                    target_data["minecraft:block"]["components"]["netease:aabb"]["collision"]["min"] = min_bound
+            # 确保 "texture_data" 键存在
+            if "texture_data" not in json_data:
+                json_data["texture_data"] = {}
 
-                # 将修改后的数据保存回原文件
-                with open(target_file_path, 'w') as file:
-                    json.dump(target_data, file, indent=4)
+            for filename_base in filenames:
+                # 生成原始数据字典
+                result_dict = build_demo(filename_base)
 
-                print(f"包围盒调整完成: {target_file_path}")
-            else:
-                print(f"包围盒调整失败: {base_filename}.json")
+                # 构造新的完整键名（带命名空间和后缀替换）
+                if json_key:
+                    formatted_key = f"{json_key}:{filename_base.replace(self.config['suffix_entity'], self.config['suffix_block'])}"
+                else:
+                    formatted_key = f"{filename_base.replace(self.config['suffix_entity'], self.config['suffix_block'])}"
+
+                # 将生成的字典内容添加到 "texture_data" 中
+                json_data["texture_data"][formatted_key] = result_dict
+
+            try:
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=4, ensure_ascii=False)
+                print(f"成功更新JSON文件到 {json_path}")
+            except Exception as e:
+                print(f"保存到 {json_path} 时发生错误: {e}")
+
+        def copy_files(self, src_dir, dest_dir):
+            """
+            复制文件
+
+            参数:
+                src_dir (str): 源目录路径
+                dest_dir (str): 目标目录路径
+            """
+            for filename in os.listdir(src_dir):
+                src_file = os.path.join(src_dir, filename)
+                dest_file = os.path.join(dest_dir, filename)
+                if os.path.isfile(src_file):
+                    try:
+                        shutil.copy(src_file, dest_file)
+                    except Exception as e:
+                        print(f"复制文件 {filename} 时发生错误: {e}")
+
+        def calculate_bounding_box(self, model_data):
+            """
+            计算模型的包围盒
+
+            参数:
+                model_data (dict): 模型数据
+
+            返回:
+                tuple: 最小和最大包围盒坐标
+            """
+            min_bound = [float('inf')] * 3
+            max_bound = [float('-inf')] * 3
+
+            for geometry in model_data['minecraft:geometry']:
+                for bone in geometry['bones']:
+                    for cube in bone['cubes']:
+                        origin = cube['origin']
+                        size = cube['size']
+                        cube_min = [origin[i] for i in range(3)]
+                        cube_max = [origin[i] + size[i] for i in range(3)]
+                        for i in range(3):
+                            min_bound[i] = min(min_bound[i], cube_min[i])
+                            max_bound[i] = max(max_bound[i], cube_max[i])
+
+            minBox = [-max_bound[0] * 0.0625, min_bound[1] * 0.0625, min_bound[2] * 0.0625]
+            maxBox = [-min_bound[0] * 0.0625, max_bound[1] * 0.0625, max_bound[2] * 0.0625]
+            for i in range(3):
+                minBox[i] = max(minBox[i], -1.0)
+                minBox[i] = min(minBox[i], 2.0)
+                maxBox[i] = max(maxBox[i], -1.0)
+                maxBox[i] = min(maxBox[i], 2.0)
+            return minBox, maxBox
+
+        def change_netease_block(self, src_dir, dest_dir):
+            """
+            批量修改包围盒
+
+            参数:
+                src_dir (str): 源目录路径
+                dest_dir (str): 目标目录路径
+            """
+            for filename in os.listdir(src_dir):
+                if filename.endswith('.json'):
+                    base_filename = os.path.splitext(filename)[0].replace(self.config["suffix_entity"] + ".geo",
+                                                                          self.config["suffix_block"])
+                    file_path = os.path.join(src_dir, filename)
+
+                    with open(file_path, 'r') as file:
+                        model_data = json.load(file)
+                    min_bound, max_bound = self.calculate_bounding_box(model_data)
+
+                    target_file_path = os.path.join(dest_dir, f"{base_filename}.json")
+                    if os.path.exists(target_file_path):
+                        with open(target_file_path, 'r') as file:
+                            target_data = json.load(file)
+
+                        if 'minecraft:block' in target_data:
+                            target_data["minecraft:block"]["components"]["netease:aabb"]["clip"]["max"] = max_bound
+                            target_data["minecraft:block"]["components"]["netease:aabb"]["collision"]["max"] = max_bound
+                            target_data["minecraft:block"]["components"]["netease:aabb"]["clip"]["min"] = min_bound
+                            target_data["minecraft:block"]["components"]["netease:aabb"]["collision"]["min"] = min_bound
+
+                        with open(target_file_path, 'w') as file:
+                            json.dump(target_data, file, indent=4)
+                        print(f"包围盒调整完成: {target_file_path}")
+                    else:
+                        print(f"包围盒调整失败: {base_filename}.json")
 
 if __name__ == "__main__":
-
-    # 目标texture，运行后将自动对该路径下的全部贴图进行规范化
-    input_texture_path = r"D:\测试目录\基岩版贴图"
-    # 目标geo，运行后将自动对该路径下的全部贴图进行规范化
-    input_geo_path = r"D:\测试目录\基岩版模型"
-    # 生成资源目录
-    build_Path = r"D:\测试目录"
-
-    config = {
-        "subTxtList": ["_entity", "drink_", "_block"],   # 批量删减指定路径下文件名称中的某字串
-        "name": "easecation", # ide前缀(easecation:air)
-        "prefix": "drink_", # 命名前缀(区分模型类型用)
-        "suffix_entity": "_entity", # 命名后缀（实体，不建议改动）
-        "suffix_block": "_block",  # 命名后缀（方块，不建议改动）
-        "directory": "drinkBlock"   # 次级目录名，表示本次生成的各种资源放在什么那个目录下
-
-    }
-    # 0.修正目录(务必执行)
-    PackageBuilder.buildDirectories(build_Path, config['directory'])
-
-    # 1.对目标texture目录下的全部模型贴图进行规范化命名(非必选)
-    subNameByPath(input_texture_path, config['subTxtList'])
-    renameAddByPath(input_texture_path, config['prefix'], config['suffix_entity'], "tex")
-
-    # 2.对目标geo目录下的全部模型进行规范化命名(非必选)
-    subNameByPath(input_geo_path, config['subTxtList'])
-    renameAddByPath(input_geo_path, config['prefix'], config['suffix_entity'], "geo")
-
-    # 3.修改geo文件中的模型名称
-    modifyGeoIdentifier(input_geo_path)
-
-    # 4.生成行为包entitys
-    buildBehaviorEntityByDirectory(input_texture_path, build_Path + "\{}\{}\{}".format("behavior_pack", "entities", config["directory"]))
-
-    # 5.生成行为包netease_blocks
-    buildBehaviorBlockByDirectory(input_texture_path, build_Path + "\{}\{}".format("behavior_pack", "netease_blocks"))
-
-    # 6.生成资源包entity
-    buildResourceBlockByDirectory(input_texture_path, build_Path + "\{}\{}\{}".format("resource_pack", "entity", config["directory"]), config["directory"])
-
-    # 7.调整blocks.json文件(方块定义)
-    buildBlocksJson(build_Path + "\{}".format("resource_pack"), input_texture_path)
-
-    # 8.调整item_texture.json文件(实体怪物蛋)
-    buildItemTextureJson(build_Path + "\{}\{}".format("resource_pack", "textures"), input_texture_path)
-
-    # 9.调整terrain_texture.json文件(方块图集)
-    buildTerrainTextureJson(build_Path + "\{}\{}".format("resource_pack", "textures"), input_texture_path)
-
-    # 10.复制贴图与模型到目标路径
-    copyFiles(input_texture_path, (build_Path + "\{}\{}\{}\{}".format("resource_pack", "textures", "entity", config["directory"])))
-    copyFiles(input_geo_path, (build_Path + "\{}\{}\{}\{}".format("resource_pack", "models", "entity", config["directory"])))
-
-    # 11.调整neteaseBlock包围盒
-    changeNeteaseBlock(
-        build_Path+ "\{}\{}\{}\{}".format("resource_pack", "models", "entity", config['directory']),
-        build_Path + "\{}\{}".format("behavior_pack", "netease_blocks"))
-    print("一键生成结束！！！")
+    root = tk.Tk()
+    app = ResourceBuilderGUI(root)
+    root.mainloop()
